@@ -2,50 +2,66 @@ package org.basket.db;
 
 import org.basket.model.*;
 
+import java.io.IOException;
 import java.util.ArrayList;
+import com.couchbase.client.java.*;
+import com.couchbase.client.java.document.*;
+import com.couchbase.client.java.document.json.*;
+import com.couchbase.client.java.query.*;
+import org.codehaus.jackson.map.ObjectMapper;
+
 
 public class DB {
     private static final DB instance = new DB();
-    private static int CURRENT_YEAR = 2018; // will be environment variable or config file or something
 
-    private static String QUERY_GET_CLUBS_BY_REGION =
-            "SELECT * FROM <region> WHERE doctype = 'club'";
-    private static String QUERY_GET_RESULTS_BY_CLUB =
-            "SELECT * FROM <region> WHERE doctype = 'result' AND 'club' = %1 AND 'year' = %2";
+    // will be environment variable or config file or something:
+    private static String RATING_YEAR = "2018";
+    private static String SERVER = "192.168.1.15";
+    private static String USR = "Administrator";
+    private static String PWD = "password";
 
-    private static String QUERY_GET_CLUB_RATING =
-            "SELECT SUM((w.place/w.total_teams)*100) FROM " +
-            "(SELECT MIN(final_place) as place, total_teams FROM <region> WHERE doctype='result' " +
-                    "ANM year = %1 and club = %2 " +
-            "GROUP BY age, total_teams) as w";
+    private Cluster cluster;
+    private Bucket bucket;
+    private ObjectMapper jacksonMapper = new ObjectMapper();
 
-    private DB(){}
+    private static String QUERY_GET_PINS =
+            "SELECT ROUND(AVG(100 - TONUMBER(w.place)/w.total_teams*100)) AS rating , w.full_name, w.lat, w.lon  " +
+            "FROM (SELECT MIN(b1.final_place) as place, b1.total_teams, b1.club, b2.full_name, b2.lat, b2.lon  " +
+            "FROM <region> b1 INNER JOIN <region> b2 ON KEYS b1.club WHERE b1.doctype='result' AND b1.year=%1 " +
+            "AND (b2.active = true OR b2.active IS MISSING) " +
+            "GROUP BY b1.age, b1.total_teams, b1.club, b2.full_name, b2.lat, b2.lon) AS w " +
+            "GROUP BY w.full_name, w.lat, w.lon";
+
+
+    private DB(){
+        cluster = CouchbaseCluster.create(SERVER);
+        cluster.authenticate(USR, PWD);
+    }
 
     public static DB getInstance(){
         return instance;
     }
 
     public Pin[] getPinsByRegion(String region){
-        Club[] clubs = getClubsByRegion(region);
+        bucket = cluster.openBucket(region);
+        N1qlQueryResult queryResult = bucket.query(N1qlQuery.parameterized(
+                QUERY_GET_PINS.replace("<region>", region), JsonArray.from(RATING_YEAR)));
+
         ArrayList<Pin> pinsList = new ArrayList<>();
-        for (Club club: clubs){
-            Result[] results = getResultsByClubAndRegion(region, club);
-            int rating = calculateClubRating(results);
-            pinsList.add(new Pin(club.getFullName(), rating, club.getLat(), club.getLon()));
+
+        for (N1qlQueryRow row : queryResult) {
+            String rowJsonString = row.value().toString();
+            try {
+                pinsList.add(jacksonMapper.readValue(rowJsonString, Pin.class));
+            } catch (IOException ioex) {
+                continue;
+            }
         }
+        bucket.close();
         return (Pin[]) pinsList.toArray();
     }
 
-    private Club[] getClubsByRegion(String region){
-        return null;
-    }
 
-    private Result[] getResultsByClubAndRegion(String region, Club club) {
-        return null;
-    }
 
-    private int calculateClubRating(Result[] results) {
-        return 0;
-    }
 
 }
